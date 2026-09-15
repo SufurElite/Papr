@@ -1,4 +1,4 @@
-///! `papr` executable entry point.
+//! `papr` executable entry point.
 
 mod state;
 pub use state::*;
