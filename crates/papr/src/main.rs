@@ -1331,18 +1331,33 @@ impl ProjectCompiler {
         changed
     }
 
+    /// A finished PDF ends with the `%%EOF` marker; latexmk's intermediate passes
+    /// can leave a truncated file on disk, so we skip those to avoid rastering junk.
+    fn pdf_is_complete(path: &Path) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = std::fs::File::open(path) else { return false };
+        let Ok(len) = f.seek(SeekFrom::End(0)) else { return false };
+        let tail = len.min(1024);
+        if f.seek(SeekFrom::End(-(tail as i64))).is_err() { return false; }
+        let mut buf = vec![0u8; tail as usize];
+        if f.read_exact(&mut buf).is_err() { return false; }
+        buf.windows(5).any(|w| w == b"%%EOF")
+    }
+
+
     fn activate_completed_latex_pdf(&mut self, app: &mut App) -> bool {
-        // latexmk runs multiple compilation passes and may write partial PDFs;
-        // require both the filesystem event and its final success message.
-        if !self.build_signals.pdf_changed || !self.build_signals.build_succeeded {
+        // Reload as soon as latexmk has written a *complete* main.pdf
+        if !self.build_signals.pdf_changed {
+            return false;
+        }
+        let pdf = self.project.path.join("main.pdf");
+        if !pdf.exists() || !Self::pdf_is_complete(&pdf) {
+            // Partial write from an intermediate pass — wait for the next fs event.
             return false;
         }
         self.build_signals.pdf_changed = false;
         self.build_signals.build_succeeded = false;
-        let pdf = self.project.path.join("main.pdf");
-        if !pdf.exists() {
-            return false;
-        }
+    
         let diagnostics = parse_latex_diagnostics(&self.build_raw_log, &self.project.path);
         app.project_build_raw_log = self.build_raw_log.clone();
         app.project_build_selected = 0;
@@ -1356,6 +1371,7 @@ impl ProjectCompiler {
         self.build_raw_log.clear();
         self.activate_pdf(app)
     }
+    
 
     fn activate_pdf(&mut self, app: &mut App) -> bool {
         let pdf = self.project.path.join("main.pdf");
